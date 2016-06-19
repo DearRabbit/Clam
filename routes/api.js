@@ -21,6 +21,8 @@ sqlSet = {
 
   setOnline: "update userinfo set userState = 1 where userID = ?",
   setOfffine: "update userinfo set userState = 0 where userID = ?",
+
+  login: "select passWord, salt from userinfo where userID = ?",
 };
 
 var failRet = {result: -1};
@@ -32,7 +34,23 @@ var waitingList = {};
 // for userID = 1, No.2 wants to add him as group 'name'
 // No.3 wants to add him as group 'gp2'.
 
-function insertFriend(mainID, friendID, groupName) {
+var loginsession = {};
+// key(id):value(randomString.32)
+
+
+function randomString()
+{
+  var chars = 'abcdefghijklmnopqrstuvwxyz1234567890';
+  var maxPos = chars.length;
+  var pwd = '';
+  for (var i = 0; i < 32; i++) {
+    pwd += chars.charAt(Math.floor(Math.random() * maxPos));
+  }
+  return pwd;
+}
+
+function insertFriend(mainID, friendID, groupName)
+{
   conn.getConnection(function (err, conn) {
     if (err) {
       console.log("POOL ==> " + err);
@@ -49,7 +67,8 @@ function insertFriend(mainID, friendID, groupName) {
   });
 }
 
-function deleteFriend (mainID, friendID) {
+function deleteFriend (mainID, friendID)
+{
   conn.getConnection(function (err, conn) {
     if (err) {
       console.log("POOL ==> " + err);
@@ -66,6 +85,67 @@ function deleteFriend (mainID, friendID) {
   });
 }
 
+function setOnline(id)
+{
+  conn.getConnection(function (err, conn) {
+    if (err) {
+      console.log("POOL ==> " + err);
+    }
+
+    else {
+      conn.query(sqlSet.setOnline, [id], function(err, rows){
+        conn.release();
+        if (err) {
+          console.log(err);
+        }
+      });
+    }
+  });
+}
+
+function setOffline(id)
+{
+  conn.getConnection(function (err, conn) {
+    if (err) {
+      console.log("POOL ==> " + err);
+    }
+
+    else {
+      conn.query(sqlSet.setOfffine, [id], function(err, rows){
+        conn.release();
+        if (err) {
+          console.log(err);
+        }
+      });
+    }
+  });
+}
+
+function genpwdWithSalt(pwd, salt) {
+  var md5_1 = crypto.createHash('md5');
+  md5_1.update(pwd);
+
+  var pwdInMD5 = md5_1.digest('hex');
+  var withSalt = pwdInMD5 + salt;
+
+  var md5_2 = crypto.createHash('md5');
+  md5_2.update(withSalt);
+  var pwdSalt = md5_2.digest('hex');
+
+  return pwdSalt;
+}
+
+whiteList = ['/login', '/register', '/validation', '/test'];
+router.use(function(req, res, next) {
+  if (whiteList.indexOf(req.url.split('?')[0]) != -1) {
+    next();
+  }
+  else if (req.body.sessionID && req.body.sessionSecret && loginsession[req.body.sessionID]==req.body.sessionSecret) {
+    next();
+  }
+  else return res.sendStatus(400);
+});
+
 // user management
 router.post('/getUserInfo', function (req, res, next) {
   conn.getConnection(function (err, conn) {
@@ -74,7 +154,7 @@ router.post('/getUserInfo', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.getUserInfo, [req.query.id], function(err,rows){
+      conn.query(sqlSet.getUserInfo, [req.body.id], function(err,rows){
         if (err) {
           console.log(err);
           conn.release();
@@ -99,7 +179,7 @@ router.post('/getFriendList', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.getFriendList, [req.query.id], function(err,rows){
+      conn.query(sqlSet.getFriendList, [req.body.id], function(err,rows){
         conn.release();
         if (err) {
           console.log(err);
@@ -118,18 +198,10 @@ router.post('/register', function (req, res, next) {
     }
 
     else {
-      var md5_1 = crypto.createHash('md5');
-      md5_1.update(req.query.password);
+      var salt = randomString();
+      var pwdSalt = genpwdWithSalt(req.body.password, salt);
 
-      var pwdInMD5 = md5_1.digest('hex');
-      var salt = 'fe9d26c3e620eeb69bd166c8be89fb8f';
-      var withSalt = pwdInMD5 + salt;
-
-      var md5_2 = crypto.createHash('md5');
-      md5_2.update(withSalt);
-      var pwdSalt = md5_2.digest('hex');
-
-      var qSet = [req.query.userName, pwdSalt, salt, req.query.realName, req.query.email, req.query.phone];
+      var qSet = [req.body.userName, pwdSalt, salt, req.body.realName, req.body.email, req.body.phone];
       conn.query(sqlSet.register, qSet, function(err,rows){
         conn.release();
         if (err) {
@@ -149,7 +221,7 @@ router.post('/validation', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.validation, [req.query.userName, req.query.email], function(err,rows){
+      conn.query(sqlSet.validation, [req.body.userName, req.body.email], function(err,rows){
         conn.release();
         if (err) {
           console.log(err);
@@ -162,31 +234,31 @@ router.post('/validation', function (req, res, next) {
 });
 
 router.post('/askAddFriend', function (req, res, next) {
-  if (waitingList[req.query.friendID] == undefined) {
-    waitingList[req.query.friendID] = {};
+  if (waitingList[req.body.friendID] == undefined) {
+    waitingList[req.body.friendID] = {};
   }
-  waitingList[req.query.friendID][req.query.mainID] = req.query.groupName;
+  waitingList[req.body.friendID][req.body.mainID] = req.body.groupName;
 
   return res.json(succRet);
 });
 
 router.post('/getAddFriendList', function (req, res, next) {
-  if (waitingList[req.query.id] == undefined) {
+  if (waitingList[req.body.id] == undefined) {
     return res.json({});
   }
   else {
-    return res.json(waitingList[req.query.id]);
+    return res.json(waitingList[req.body.id]);
   }
 });
 
 router.post('/confirmAddFriend', function (req, res, next) {
-  var senderID = req.query.senderID;
-  var recverID = req.query.recverID;
+  var senderID = req.body.senderID;
+  var recverID = req.body.recverID;
 
   if (waitingList[recverID]) {
     if (waitingList[recverID][senderID]) {
       insertFriend(senderID, recverID, waitingList[recverID][senderID]);
-      insertFriend(recverID, senderID, req.query.groupName);
+      insertFriend(recverID, senderID, req.body.groupName);
       return res.json(succRet);
     }
     delete waitingList[recverID][senderID];
@@ -195,7 +267,7 @@ router.post('/confirmAddFriend', function (req, res, next) {
 });
 
 router.post('/deleteFriend', function (req, res, next) {
-  deleteFriend(req.query.mainID, req.query.friendID);
+  deleteFriend(req.body.mainID, req.body.friendID);
 });
 
 router.post('/sendMsg', function (req, res, next) {
@@ -205,7 +277,7 @@ router.post('/sendMsg', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.sendMsg, [req.query.senderID, req.query.recverID, req.query.msgContent], function(err, rows){
+      conn.query(sqlSet.sendMsg, [req.body.senderID, req.body.recverID, req.body.msgContent], function(err, rows){
         conn.release();
         if (err) {
           console.log(err);
@@ -224,7 +296,7 @@ router.post('/recvMsg', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.sendMsg, [req.query.id], function(err, rows){
+      conn.query(sqlSet.sendMsg, [req.body.id], function(err, rows){
         conn.release();
         if (err) {
           console.log(err);
@@ -243,7 +315,7 @@ router.post('/setGroupName', function (req, res, next) {
     }
 
     else {
-      conn.query(sqlSet.setGroupName, [req.query.groupName, req.query.mainID, req.query.friendID], function(err, rows){
+      conn.query(sqlSet.setGroupName, [req.body.groupName, req.body.mainID, req.body.friendID], function(err, rows){
         conn.release();
         if (err) {
           console.log(err);
@@ -255,42 +327,54 @@ router.post('/setGroupName', function (req, res, next) {
   });
 });
 
-router.post('/setOnline', function (req, res, next) {
+router.post('/login', function (req, res, next) {
+  var sessionSecrect = randomString();
+
   conn.getConnection(function (err, conn) {
     if (err) {
       console.log("POOL ==> " + err);
     }
 
     else {
-      conn.query(sqlSet.setOnline, [req.query.id], function(err, rows){
+      conn.query(sqlSet.login, [req.body.sessionID], function(err, rows){
         conn.release();
         if (err) {
           console.log(err);
           return res.json(failRet);
         }
-        return res.json(succRet);
+        if (rows.length == 0) {
+          return res.json(failRet);
+        }
+        var sessionpwdWithSalt = genpwdWithSalt(req.body.sessionPWD, rows[0].salt);
+        if (sessionpwdWithSalt != rows[0].passWord) {
+          console.log('wrong password!');
+          return res.json(failRet);
+        }
+        setOnline(req.body.sessionID);
+        loginsession[req.body.sessionID] = sessionSecrect;
+
+        console.log(loginsession);
+        return res.json({result:0, sessionSecret:sessionSecrect});
       });
     }
   });
 });
 
-router.post('/setOffline', function (req, res, next) {
-  conn.getConnection(function (err, conn) {
-    if (err) {
-      console.log("POOL ==> " + err);
-    }
+router.post('/logout', function (req, res, next) {
+  if (loginsession[req.body.sessionID] != undefined) {
+    delete loginsession[req.body.sessionID];
+    console.log('logout!');
+    setOffline(req.body.sessionID);
+    return res.json(succRet);
+  }
+  else {
+    console.log('logout error!');
+    return res.json(failRet);
+  }
+});
 
-    else {
-      conn.query(sqlSet.setOfffine, [req.query.id], function(err, rows){
-        conn.release();
-        if (err) {
-          console.log(err);
-          return res.json(failRet);
-        }
-        return res.json(succRet);
-      });
-    }
-  });
+router.post('/test', function (req, res, next) {
+  return res.json(succRet);
 });
 
 module.exports = router;
